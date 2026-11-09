@@ -5,6 +5,10 @@
 library(tidyverse)
 library(DESeq2)
 library(pheatmap)
+library(ggplot2)
+library(png)
+library(grid)
+library(gridExtra)
 
 
 # ============================================================
@@ -29,8 +33,7 @@ counts <- counts[, -c(2:5)]
 # Rename first two columns
 colnames(counts)[1:2] <- c("gene", "length")
 
-
-# Extract SRR accession numbers from sample names
+# Extract SRR accession numbers
 colnames(counts)[3:ncol(counts)] <- sub(
   ".*(SRR[0-9]+).*",
   "\\1",
@@ -81,7 +84,7 @@ counts <- counts[
   complete.cases(counts[, sample_cols]),
 ]
 
-# Remove genes with zero counts across ALL samples
+# Remove genes with zero counts across all samples
 counts <- counts[
   rowSums(counts[, sample_cols]) > 0,
 ]
@@ -89,10 +92,10 @@ counts <- counts[
 # Check remaining genes
 dim(counts)
 
-# Check for remaining NA values
+# Check for NA values
 sum(is.na(counts[, sample_cols]))
 
-# Check for zero-count genes
+# Check for all-zero genes
 sum(rowSums(counts[, sample_cols]) == 0)
 
 
@@ -107,7 +110,10 @@ all_samples <- c(
   astrocytes_Saline
 )
 
-missing_samples <- setdiff(all_samples, colnames(counts))
+missing_samples <- setdiff(
+  all_samples,
+  colnames(counts)
+)
 
 if (length(missing_samples) > 0) {
   stop(
@@ -119,32 +125,145 @@ if (length(missing_samples) > 0) {
 }
 
 # Check for duplicate sample names
-stopifnot(!anyDuplicated(colnames(counts)[3:ncol(counts)]))
+stopifnot(
+  !anyDuplicated(colnames(counts)[3:ncol(counts)])
+)
 
 
 # ============================================================
-# 7. CREATE FOUR SEPARATE DATASETS
+# 7. ANNOTATE GENES USING GENCODE M39
 # ============================================================
 
-microglia_LPS_counts <- counts[
-  , c("gene", "length", microglia_LPS)
-]
+# Load GENCODE M39 GTF file
+gtf <- read.delim(
+  "gencode.vM39.primary_assembly.annotation.gtf",
+  header = FALSE,
+  sep = "\t",
+  comment.char = "#",
+  quote = "",
+  stringsAsFactors = FALSE
+)
 
-microglia_Saline_counts <- counts[
-  , c("gene", "length", microglia_Saline)
-]
+# Assign column names
+colnames(gtf) <- c(
+  "chromosome",
+  "source",
+  "feature",
+  "start",
+  "end",
+  "score",
+  "strand",
+  "frame",
+  "attributes"
+)
 
-astrocytes_LPS_counts <- counts[
-  , c("gene", "length", astrocytes_LPS)
-]
+# Extract gene-level annotations
+gene_annotation <- gtf %>%
+  filter(feature == "gene") %>%
+  mutate(
+    gene_id = stringr::str_match(
+      attributes,
+      'gene_id "([^"]+)"'
+    )[, 2],
+    
+    gene_name = stringr::str_match(
+      attributes,
+      'gene_name "([^"]+)"'
+    )[, 2]
+  ) %>%
+  select(gene_id, gene_name) %>%
+  filter(!is.na(gene_id)) %>%
+  mutate(
+    gene_id = sub("\\.[0-9]+$", "", gene_id)
+  ) %>%
+  distinct(gene_id, .keep_all = TRUE)
 
-astrocytes_Saline_counts <- counts[
-  , c("gene", "length", astrocytes_Saline)
-]
+# Add version-free Ensembl IDs to count data
+counts <- counts %>%
+  mutate(
+    gene_id = sub("\\.[0-9]+$", "", gene)
+  )
+
+# Check gene annotation matching
+matched_genes <- sum(
+  counts$gene_id %in% gene_annotation$gene_id
+)
+
+cat(
+  "Genes matched:",
+  matched_genes,
+  "out of",
+  nrow(counts),
+  "\n"
+)
+
+cat(
+  "Percentage matched:",
+  round(
+    100 * matched_genes / nrow(counts),
+    2
+  ),
+  "%\n"
+)
+
+# Add gene symbols to count data
+counts <- counts %>%
+  left_join(
+    gene_annotation,
+    by = "gene_id"
+  ) %>%
+  mutate(
+    gene_name = if_else(
+      is.na(gene_name) | gene_name == "",
+      gene,
+      gene_name
+    )
+  )
 
 
 # ============================================================
-# 8. EXPORT FOUR CSV FILES
+# 8. CREATE FOUR SEPARATE DATASETS
+# ============================================================
+
+microglia_LPS_counts <- counts %>%
+  select(
+    gene,
+    gene_id,
+    gene_name,
+    length,
+    all_of(microglia_LPS)
+  )
+
+microglia_Saline_counts <- counts %>%
+  select(
+    gene,
+    gene_id,
+    gene_name,
+    length,
+    all_of(microglia_Saline)
+  )
+
+astrocytes_LPS_counts <- counts %>%
+  select(
+    gene,
+    gene_id,
+    gene_name,
+    length,
+    all_of(astrocytes_LPS)
+  )
+
+astrocytes_Saline_counts <- counts %>%
+  select(
+    gene,
+    gene_id,
+    gene_name,
+    length,
+    all_of(astrocytes_Saline)
+  )
+
+
+# ============================================================
+# 9. EXPORT FOUR CSV FILES
 # ============================================================
 
 write.csv(
@@ -170,30 +289,6 @@ write.csv(
   "Astrocytes_Saline.csv",
   row.names = FALSE
 )
-# ============================================================
-# 9. LOAD FOUR COUNT FILES
-# ============================================================
-
-microglia_LPS <- read.csv(
-  "Microglia_LPS.csv",
-  check.names = FALSE
-)
-
-microglia_Saline <- read.csv(
-  "Microglia_Saline.csv",
-  check.names = FALSE
-)
-
-astrocytes_LPS <- read.csv(
-  "Astrocytes_LPS.csv",
-  check.names = FALSE
-)
-
-astrocytes_Saline <- read.csv(
-  "Astrocytes_Saline.csv",
-  check.names = FALSE
-)
-
 
 # ============================================================
 # 10. CREATE FUNCTION TO RUN DESEQ2
@@ -205,22 +300,23 @@ run_deseq <- function(LPS, Saline, cell_type) {
   genes <- LPS$gene
   
   # Check that gene IDs match between conditions
-  stopifnot(identical(LPS$gene, Saline$gene))
-  
-  # Extract raw count data
-  LPS_counts <- LPS[, -c(1, 2)]
-  Saline_counts <- Saline[, -c(1, 2)]
-  
-  # Combine LPS and Saline samples
-  count_data <- cbind(
-    LPS_counts,
-    Saline_counts
+  stopifnot(
+    identical(LPS$gene, Saline$gene)
   )
   
-  # Convert to matrix
-  count_matrix <- as.matrix(count_data)
+  # Extract sample columns by excluding annotation columns
+  LPS_counts <- LPS %>%
+    select(-gene, -gene_id, -gene_name, -length)
   
-  # Check that counts are valid integers
+  Saline_counts <- Saline %>%
+    select(-gene, -gene_id, -gene_name, -length)
+  
+  # Combine LPS and Saline counts
+  count_matrix <- as.matrix(
+    cbind(LPS_counts, Saline_counts)
+  )
+  
+  # Check counts
   stopifnot(
     all(is.finite(count_matrix)),
     all(count_matrix >= 0),
@@ -244,7 +340,6 @@ run_deseq <- function(LPS, Saline, cell_type) {
     )
   )
   
-  # Assign sample names
   rownames(sample_info) <- colnames(count_matrix)
   
   # Create DESeq2 dataset
@@ -254,7 +349,7 @@ run_deseq <- function(LPS, Saline, cell_type) {
     design = ~ condition
   )
   
-  # Filter genes with low counts
+  # Filter low-count genes
   keep <- rowSums(counts(dds) >= 10) >= 2
   
   dds <- dds[keep, ]
@@ -269,9 +364,23 @@ run_deseq <- function(LPS, Saline, cell_type) {
     alpha = 0.05
   )
   
-  # Convert results into a data frame
-  res_df <- as.data.frame(res) |>
-    rownames_to_column("gene") |>
+  # Convert results to data frame
+  res_df <- as.data.frame(res) %>%
+    rownames_to_column("gene") %>%
+    mutate(
+      gene_id = sub("\\.[0-9]+$", "", gene)
+    ) %>%
+    left_join(
+      gene_annotation,
+      by = "gene_id"
+    ) %>%
+    mutate(
+      gene_name = if_else(
+        is.na(gene_name) | gene_name == "",
+        gene,
+        gene_name
+      )
+    ) %>%
     arrange(padj)
   
   # Export DESeq2 results
@@ -285,9 +394,23 @@ run_deseq <- function(LPS, Saline, cell_type) {
   normalized_counts <- counts(
     dds,
     normalized = TRUE
-  ) |>
-    as.data.frame() |>
-    rownames_to_column("gene")
+  ) %>%
+    as.data.frame() %>%
+    rownames_to_column("gene") %>%
+    mutate(
+      gene_id = sub("\\.[0-9]+$", "", gene)
+    ) %>%
+    left_join(
+      gene_annotation,
+      by = "gene_id"
+    ) %>%
+    mutate(
+      gene_name = if_else(
+        is.na(gene_name) | gene_name == "",
+        gene,
+        gene_name
+      )
+    )
   
   # Export normalized counts
   write.csv(
@@ -312,8 +435,8 @@ run_deseq <- function(LPS, Saline, cell_type) {
 # ============================================================
 
 microglia_results <- run_deseq(
-  LPS = microglia_LPS,
-  Saline = microglia_Saline,
+  LPS = microglia_LPS_counts,
+  Saline = microglia_Saline_counts,
   cell_type = "Microglia"
 )
 
@@ -323,8 +446,8 @@ microglia_results <- run_deseq(
 # ============================================================
 
 astrocytes_results <- run_deseq(
-  LPS = astrocytes_LPS,
-  Saline = astrocytes_Saline,
+  LPS = astrocytes_LPS_counts,
+  Saline = astrocytes_Saline_counts,
   cell_type = "Astrocytes"
 )
 
@@ -341,33 +464,22 @@ astrocytes_dat <- astrocytes_results$results
 
 
 # ============================================================
-# 14. EXAMINE RESULTS
+# 14. IDENTIFY SIGNIFICANT DEGS
 # ============================================================
 
-head(microglia_dat)
-
-head(astrocytes_dat)
-
-
-# ============================================================
-# 15. IDENTIFY SIGNIFICANT DEGS
-# ============================================================
-
-microglia_DEGs <- microglia_dat |>
+microglia_DEGs <- microglia_dat %>%
   filter(
     !is.na(padj),
     padj < 0.05
   )
 
-astrocytes_DEGs <- astrocytes_dat |>
+astrocytes_DEGs <- astrocytes_dat %>%
   filter(
     !is.na(padj),
     padj < 0.05
   )
-
 
 # Export significant DEGs
-
 write.csv(
   microglia_DEGs,
   "Microglia_significant_DEGs.csv",
@@ -382,42 +494,24 @@ write.csv(
 
 
 # ============================================================
-# 16. COUNT UPREGULATED AND DOWNREGULATED GENES
+# 15. COUNT UPREGULATED AND DOWNREGULATED GENES
 # ============================================================
 
-# Positive log2FoldChange = upregulated in LPS
-# Negative log2FoldChange = downregulated in LPS
-
-microglia_DEGs |>
+microglia_DEGs %>%
   summarise(
     Upregulated = sum(log2FoldChange > 0),
     Downregulated = sum(log2FoldChange < 0)
   )
 
-astrocytes_DEGs |>
+astrocytes_DEGs %>%
   summarise(
     Upregulated = sum(log2FoldChange > 0),
     Downregulated = sum(log2FoldChange < 0)
   )
 
 # ============================================================
-# 17. LOAD VISUALIZATION PACKAGES
+# 16. CREATE OUTPUT FOLDERS
 # ============================================================
-
-library(ggplot2)
-library(pheatmap)
-
-
-# Extract DESeq2 objects and results
-
-microglia_dds <- microglia_results$dds
-astrocytes_dds <- astrocytes_results$dds
-
-microglia_dat <- microglia_results$results
-astrocytes_dat <- astrocytes_results$results
-
-
-# Create output folders
 
 dir.create(
   "Microglia_plots",
@@ -431,22 +525,21 @@ dir.create(
 
 plot_PCA <- function(dds, cell_type, output_folder) {
   
-  # Transform counts
-  rld <- rlog(dds, blind = FALSE)
+  rld <- rlog(
+    dds,
+    blind = FALSE
+  )
   
-  # Extract PCA data
   pcaData <- plotPCA(
     rld,
     intgroup = "condition",
     returnData = TRUE
   )
   
-  # Calculate percentage of variance
   percentVar <- round(
     100 * attr(pcaData, "percentVar")
   )
   
-  # Generate PCA plot
   p <- ggplot(
     pcaData,
     aes(
@@ -488,14 +581,11 @@ plot_PCA <- function(dds, cell_type, output_folder) {
       plot.title = element_text(
         face = "bold",
         size = 13
-      ),
-      plot.subtitle = element_text(
-        size = 10
       )
     ) +
     labs(
-      title = paste(
-        "Global Gene Expression Profiles of",
+      title = paste0(
+        "Global Gene Expression Profiles of ",
         cell_type,
         ": LPS vs Saline"
       ),
@@ -519,9 +609,14 @@ plot_PCA <- function(dds, cell_type, output_folder) {
   )
 }
 
+
+
+
+
+
 plot_volcano <- function(dat, cell_type, output_folder) {
   
-  # Remove NA values
+  # Prepare data
   labelled_dat <- dat %>%
     filter(
       !is.na(padj),
@@ -533,14 +628,57 @@ plot_volcano <- function(dat, cell_type, output_folder) {
         padj < 0.05 & log2FoldChange < -1 ~ "DOWN",
         TRUE ~ "NONE"
       ),
-      
-      # Prevent infinite values if adjusted p-value is zero
       neg_log10_padj = -log10(
         pmax(padj, .Machine$double.xmin)
+      ),
+      gene_label = if_else(
+        is.na(gene_name) | gene_name == "",
+        gene,
+        gene_name
       )
     )
   
-  # Generate volcano plot
+  # Select top 5 upregulated genes
+  top_up <- labelled_dat %>%
+    filter(up_down == "UP") %>%
+    arrange(desc(log2FoldChange), padj) %>%
+    slice_head(n = 5)
+  
+  # Select top 5 downregulated genes
+  top_down <- labelled_dat %>%
+    filter(up_down == "DOWN") %>%
+    arrange(log2FoldChange, padj) %>%
+    slice_head(n = 5)
+  
+  # Combine selected genes
+  label_dat <- bind_rows(
+    top_up,
+    top_down
+  )
+  
+  # Distinguish duplicate gene symbols
+  duplicate_labels <- duplicated(label_dat$gene_label) |
+    duplicated(label_dat$gene_label, fromLast = TRUE)
+  
+  label_dat$gene_label[duplicate_labels] <- paste0(
+    label_dat$gene_label[duplicate_labels],
+    " (",
+    label_dat$gene_id[duplicate_labels],
+    ")"
+  )
+  
+  # Calculate plot boundaries
+  x_range <- range(labelled_dat$log2FoldChange, na.rm = TRUE)
+  y_range <- range(labelled_dat$neg_log10_padj, na.rm = TRUE)
+  
+  x_padding <- diff(x_range) * 0.15
+  y_padding <- diff(y_range) * 0.15
+  
+  # Avoid zero-width limits
+  if (x_padding == 0) x_padding <- 1
+  if (y_padding == 0) y_padding <- 1
+  
+  # Create volcano plot
   p <- ggplot(
     labelled_dat,
     aes(
@@ -549,36 +687,88 @@ plot_volcano <- function(dat, cell_type, output_folder) {
       colour = up_down
     )
   ) +
+    
+    # Plot all genes
     geom_point(
       alpha = 0.7,
-      size = 1.5
+      size = 1.6
     ) +
+    
+    # Label top 5 upregulated and downregulated genes
+    ggrepel::geom_label_repel(
+      data = label_dat,
+      aes(label = gene_label),
+      inherit.aes = TRUE,
+      colour = "black",
+      fill = "white",
+      size = 3,
+      fontface = "italic",
+      label.padding = unit(0.15, "lines"),
+      label.r = unit(0.1, "lines"),
+      box.padding = 0.8,
+      point.padding = 0.6,
+      force = 3,
+      force_pull = 0.5,
+      direction = "both",
+      min.segment.length = 0,
+      segment.colour = "grey50",
+      segment.linewidth = 0.4,
+      max.overlaps = Inf,
+      max.time = 5,
+      show.legend = FALSE
+    ) +
+    
+    # Significance threshold
     geom_hline(
       yintercept = -log10(0.05),
-      linetype = "dashed"
+      linetype = "dashed",
+      linewidth = 0.5,
+      colour = "grey40"
     ) +
+    
+    # Fold-change thresholds
     geom_vline(
       xintercept = c(-1, 1),
-      linetype = "dashed"
+      linetype = "dashed",
+      linewidth = 0.5,
+      colour = "grey40"
     ) +
+    
+    # Give labels additional room around plot boundaries
+    coord_cartesian(
+      xlim = c(
+        x_range[1] - x_padding,
+        x_range[2] + x_padding
+      ),
+      ylim = c(
+        max(0, y_range[1] - y_padding),
+        y_range[2] + y_padding
+      ),
+      clip = "off"
+    ) +
+    
     theme_classic() +
+    
     labs(
       title = paste(
         "Differential Gene Expression in",
         cell_type,
         "Following LPS Treatment"
       ),
-      subtitle = "LPS vs Saline; dashed lines indicate adjusted p-value = 0.05 and log2FC = ±1",
+      subtitle = "Top 5 upregulated and downregulated significant genes are labelled",
       x = "Log2 Fold Change (LPS vs Saline)",
       y = "-Log10 Adjusted P-value",
       colour = "Expression Direction"
     ) +
+    
     theme(
       axis.title = element_text(
-        face = "bold"
+        face = "bold",
+        size = 11
       ),
       axis.text = element_text(
-        colour = "black"
+        colour = "black",
+        size = 10
       ),
       plot.title = element_text(
         face = "bold",
@@ -586,11 +776,18 @@ plot_volcano <- function(dat, cell_type, output_folder) {
       ),
       plot.subtitle = element_text(
         size = 9
+      ),
+      legend.title = element_text(
+        face = "bold"
+      ),
+      plot.margin = margin(
+        15, 25, 15, 15
       )
     )
   
   print(p)
   
+  # Save high-resolution plot
   ggsave(
     paste0(
       output_folder,
@@ -599,15 +796,17 @@ plot_volcano <- function(dat, cell_type, output_folder) {
       "_Volcano.png"
     ),
     plot = p,
-    width = 7,
-    height = 6,
-    dpi = 300
+    width = 10,
+    height = 8,
+    dpi = 300,
+    bg = "white"
   )
 }
 
+
+
 plot_DEG_bar <- function(dat, cell_type, output_folder) {
   
-  # Filter significant genes
   labelled_dat <- dat %>%
     filter(
       !is.na(padj),
@@ -632,7 +831,6 @@ plot_DEG_bar <- function(dat, cell_type, output_folder) {
       )
     )
   
-  # Check whether significant genes exist
   if (nrow(labelled_dat) == 0) {
     message(
       paste("No significant DEGs found for", cell_type)
@@ -640,7 +838,6 @@ plot_DEG_bar <- function(dat, cell_type, output_folder) {
     return(invisible(NULL))
   }
   
-  # Set factor order
   labelled_dat$l2fc <- factor(
     labelled_dat$l2fc,
     levels = c(
@@ -652,7 +849,6 @@ plot_DEG_bar <- function(dat, cell_type, output_folder) {
     )
   )
   
-  # Generate bar plot
   p <- ggplot(
     labelled_dat,
     aes(
@@ -706,120 +902,97 @@ plot_DEG_bar <- function(dat, cell_type, output_folder) {
   )
 }
 
-plot_top10 <- function(dat, cell_type, output_folder) {
-  
-  # Filter significant genes
+plot_top5 <- function(dat, cell_type, output_folder) {
+  # Keep significant genes with valid fold-change estimates
   sig_dat <- dat %>%
     filter(
       !is.na(padj),
       !is.na(log2FoldChange),
       !is.na(lfcSE),
       padj < 0.05
+    ) %>%
+    mutate(
+      # Use the annotated gene symbol; fall back to Ensembl ID if unavailable
+      display_name = if_else(
+        is.na(gene_name) | gene_name == "",
+        gene,
+        gene_name
+      )
     )
   
-  # Select top 10 upregulated genes
-  top10Genes <- sig_dat %>%
+  # Select the five most upregulated and five most downregulated genes
+  top5_up <- sig_dat %>%
     filter(log2FoldChange > 0) %>%
     arrange(desc(log2FoldChange)) %>%
-    slice_head(n = 10)
+    slice_head(n = 5)
   
-  # Select top 10 downregulated genes
-  bot10Genes <- sig_dat %>%
+  top5_down <- sig_dat %>%
     filter(log2FoldChange < 0) %>%
     arrange(log2FoldChange) %>%
-    slice_head(n = 10)
+    slice_head(n = 5)
   
-  # Combine datasets
-  joined_top10 <- bind_rows(
-    top10Genes,
-    bot10Genes
-  ) %>%
+  top_genes <- bind_rows(top5_up, top5_down) %>%
     mutate(
-      up_down = if_else(
-        log2FoldChange > 0,
-        "UP",
-        "DOWN"
-      )
-    ) %>%
-    arrange(log2FoldChange)
-  
-  # Check whether significant genes exist
-  if (nrow(joined_top10) == 0) {
-    message(
-      paste("No significant DEGs found for", cell_type)
+      direction = if_else(log2FoldChange > 0, "Upregulated", "Downregulated")
     )
+  
+  if (nrow(top_genes) == 0) {
+    message(paste("No significant DEGs found for", cell_type))
     return(invisible(NULL))
   }
   
-  # Set gene order
-  joined_top10$gene <- factor(
-    joined_top10$gene,
-    levels = unique(joined_top10$gene)
+  # If multiple Ensembl genes share a symbol, append the Ensembl ID
+  duplicate_names <- duplicated(top_genes$display_name) |
+    duplicated(top_genes$display_name, fromLast = TRUE)
+  
+  top_genes$display_name[duplicate_names] <- paste0(
+    top_genes$display_name[duplicate_names],
+    " (",
+    top_genes$gene_id[duplicate_names],
+    ")"
   )
   
-  # Generate plot
+  # Order bars by log2 fold change
+  top_genes <- top_genes %>%
+    arrange(log2FoldChange) %>%
+    mutate(display_name = factor(display_name, levels = display_name))
+  
   p <- ggplot(
-    joined_top10,
-    aes(
-      x = gene,
-      y = log2FoldChange,
-      fill = up_down
-    )
+    top_genes,
+    aes(x = display_name, y = log2FoldChange, fill = direction)
   ) +
+    geom_hline(yintercept = 0, linewidth = 0.5) +
+    geom_col(colour = "black", width = 0.8) +
     geom_errorbar(
       aes(
         ymin = log2FoldChange - lfcSE,
         ymax = log2FoldChange + lfcSE
       ),
-      width = 0.4
-    ) +
-    geom_col(
-      colour = "black",
-      width = 0.8
+      width = 0.3
     ) +
     coord_flip() +
-    geom_hline(
-      yintercept = 0
-    ) +
     theme_classic() +
     labs(
-      title = paste(
-        "Top 10 Upregulated and Downregulated Genes in",
-        cell_type
-      ),
-      subtitle = "Significant DEGs following LPS treatment (adjusted p-value < 0.05)",
-      x = "Gene ID",
+      title = paste("Top 5 Upregulated and Downregulated Genes in", cell_type),
+      subtitle = "Top significant DEGs ranked by log2 fold change (adjusted p-value < 0.05)",
+      x = "Gene name",
       y = "Log2 Fold Change (LPS vs Saline)",
       fill = "Expression Direction"
     ) +
     theme(
-      axis.text = element_text(
-        colour = "black"
-      ),
-      axis.title = element_text(
-        face = "bold"
-      ),
-      plot.title = element_text(
-        face = "bold",
-        size = 13
-      ),
-      plot.subtitle = element_text(
-        size = 9
-      )
+      axis.text = element_text(colour = "black"),
+      axis.title = element_text(face = "bold"),
+      plot.title = element_text(face = "bold", size = 13),
+      plot.subtitle = element_text(size = 9)
     )
   
   print(p)
   
   ggsave(
-    paste0(
-      output_folder,
-      "/",
-      cell_type,
-      "_Top10_DEGs.png"
-    ),
+    filename = paste0(output_folder, "/", cell_type, "_Top5_DEGs.png"),
     plot = p,
     width = 8,
-    height = 7,
+    height = 6,
     dpi = 300
   )
 }
@@ -850,7 +1023,7 @@ plot_normalized_counts <- function(
   ) %>%
     rownames_to_column("Sample")
   
-  # Add condition information
+  # Add treatment information
   normalized_counts <- normalized_counts %>%
     left_join(
       sample_info,
@@ -868,7 +1041,6 @@ plot_normalized_counts <- function(
     slice_head(n = 1) %>%
     pull(gene)
   
-  # Check whether significant genes exist
   if (length(gene_of_interest) == 0) {
     message(
       paste("No significant DEGs found for", cell_type)
@@ -876,13 +1048,22 @@ plot_normalized_counts <- function(
     return(invisible(NULL))
   }
   
-  # Extract selected gene
-  gene_data <- normalized_counts %>%
-    filter(
-      gene == gene_of_interest
-    )
+  # Retrieve actual gene symbol without using first(), which can be
+  # masked by another loaded package
+  gene_symbol <- dat %>%
+    filter(gene == gene_of_interest) %>%
+    pull(gene_name)
   
-  # Generate normalized count plot
+  gene_symbol <- gene_symbol[1]
+  
+  if (length(gene_symbol) == 0 || is.na(gene_symbol) || gene_symbol == "") {
+    gene_symbol <- gene_of_interest
+  }
+  
+  # Extract selected gene expression
+  gene_data <- normalized_counts %>%
+    filter(gene == gene_of_interest)
+  
   p <- ggplot(
     gene_data,
     aes(
@@ -902,7 +1083,7 @@ plot_normalized_counts <- function(
     labs(
       title = paste(
         "Normalized Expression of",
-        gene_of_interest,
+        gene_symbol,
         "in",
         cell_type
       ),
@@ -942,9 +1123,10 @@ plot_normalized_counts <- function(
     dpi = 300
   )
 }
+
 plot_heatmap <- function(dds, cell_type, output_folder) {
   
-  # Apply variance stabilizing transformation
+  # Variance stabilizing transformation
   vsd <- vst(
     dds,
     blind = FALSE
@@ -953,14 +1135,14 @@ plot_heatmap <- function(dds, cell_type, output_folder) {
   # Extract transformed counts
   vsd_matrix <- assay(vsd)
   
-  # Calculate Z-scores for each gene
+  # Calculate gene-wise Z-scores
   Z <- t(
     scale(
       t(vsd_matrix)
     )
   )
   
-  # Remove genes with NA or non-finite Z-scores
+  # Remove genes with non-finite Z-scores
   Z_no_NA <- Z[
     apply(
       Z,
@@ -971,7 +1153,6 @@ plot_heatmap <- function(dds, cell_type, output_folder) {
     drop = FALSE
   ]
   
-  # Check whether variable genes exist
   if (nrow(Z_no_NA) == 0) {
     message(
       paste("No suitable genes for heatmap in", cell_type)
@@ -979,7 +1160,7 @@ plot_heatmap <- function(dds, cell_type, output_folder) {
     return(invisible(NULL))
   }
   
-  # Calculate variance of each gene
+  # Calculate gene variance
   gene_variance <- apply(
     vsd_matrix[
       rownames(Z_no_NA),
@@ -1006,12 +1187,49 @@ plot_heatmap <- function(dds, cell_type, output_folder) {
     drop = FALSE
   ]
   
+  # Match Ensembl IDs to gene symbols
+  heatmap_gene_names <- gene_annotation$gene_name[
+    match(
+      sub(
+        "\\.[0-9]+$",
+        "",
+        rownames(Z_topGenes)
+      ),
+      gene_annotation$gene_id
+    )
+  ]
+  
+  # Use Ensembl ID if gene symbol is unavailable
+  missing_names <- is.na(heatmap_gene_names) |
+    heatmap_gene_names == ""
+  
+  heatmap_gene_names[missing_names] <- rownames(
+    Z_topGenes
+  )[missing_names]
+  
+  # Distinguish duplicate gene symbols
+  duplicate_names <- duplicated(heatmap_gene_names) |
+    duplicated(
+      heatmap_gene_names,
+      fromLast = TRUE
+    )
+  
+  heatmap_gene_names[duplicate_names] <- paste0(
+    heatmap_gene_names[duplicate_names],
+    " (",
+    rownames(Z_topGenes)[duplicate_names],
+    ")"
+  )
+  
+  # Replace heatmap row names
+  rownames(Z_topGenes) <- heatmap_gene_names
+  
   # Create sample annotation
   annotation_col <- as.data.frame(
     colData(dds)[, "condition", drop = FALSE]
   )
   
-  # Generate heatmap
+  # Generate and save heatmap
   pheatmap(
     Z_topGenes,
     main = paste(
@@ -1035,38 +1253,33 @@ plot_heatmap <- function(dds, cell_type, output_folder) {
 }
 
 # ============================================================
-# 24. MICROGLIA VISUALIZATIONS
+# 23. MICROGLIA VISUALIZATIONS
 # ============================================================
 
-# PCA
 plot_PCA(
   microglia_dds,
   "Microglia",
   "Microglia_plots"
 )
 
-# Volcano plot
 plot_volcano(
   microglia_dat,
   "Microglia",
   "Microglia_plots"
 )
 
-# Significant DEG distribution
 plot_DEG_bar(
   microglia_dat,
   "Microglia",
   "Microglia_plots"
 )
 
-# Top 10 upregulated and downregulated genes
-plot_top10(
+plot_top5(
   microglia_dat,
   "Microglia",
   "Microglia_plots"
 )
 
-# Normalized counts
 plot_normalized_counts(
   microglia_dds,
   microglia_dat,
@@ -1074,7 +1287,6 @@ plot_normalized_counts(
   "Microglia_plots"
 )
 
-# Heatmap
 plot_heatmap(
   microglia_dds,
   "Microglia",
@@ -1083,38 +1295,33 @@ plot_heatmap(
 
 
 # ============================================================
-# 25. ASTROCYTES VISUALIZATIONS
+# 24. ASTROCYTES VISUALIZATIONS
 # ============================================================
 
-# PCA
 plot_PCA(
   astrocytes_dds,
   "Astrocytes",
   "Astrocytes_plots"
 )
 
-# Volcano plot
 plot_volcano(
   astrocytes_dat,
   "Astrocytes",
   "Astrocytes_plots"
 )
 
-# Significant DEG distribution
 plot_DEG_bar(
   astrocytes_dat,
   "Astrocytes",
   "Astrocytes_plots"
 )
 
-# Top 10 upregulated and downregulated genes
-plot_top10(
+plot_top5(
   astrocytes_dat,
   "Astrocytes",
   "Astrocytes_plots"
 )
 
-# Normalized counts
 plot_normalized_counts(
   astrocytes_dds,
   astrocytes_dat,
@@ -1122,7 +1329,6 @@ plot_normalized_counts(
   "Astrocytes_plots"
 )
 
-# Heatmap
 plot_heatmap(
   astrocytes_dds,
   "Astrocytes",
@@ -1130,29 +1336,7 @@ plot_heatmap(
 )
 
 # ============================================================
-# 26. SAVE ALL PLOTS
-# ============================================================
-
-# Install packages if needed
-if (!requireNamespace("png", quietly = TRUE)) {
-  install.packages("png")
-}
-
-if (!requireNamespace("gridExtra", quietly = TRUE)) {
-  install.packages("gridExtra")
-}
-
-if (!requireNamespace("grid", quietly = TRUE)) {
-  install.packages("grid")
-}
-
-library(png)
-library(gridExtra)
-library(grid)
-
-
-# ============================================================
-# 27. COLLECT ALL PNG FILES
+# 25. COLLECT ALL PNG FILES
 # ============================================================
 
 all_plots <- c(
@@ -1168,72 +1352,85 @@ all_plots <- c(
   )
 )
 
-# Check number of saved plots
-length(all_plots)
+# Check number of plots
+print(length(all_plots))
 
-# Display plot filenames
-basename(all_plots)
-
-
-# ============================================================
-# 28. SAVE ALL PLOTS INTO ONE ZIP FILE
-# ============================================================
-
-zip(
-  "All_RNAseq_Plots.zip",
-  files = all_plots
-)
+# Display filenames
+print(basename(all_plots))
 
 
 # ============================================================
-# 29. COMBINE ALL PLOTS INTO ONE PDF
+# 26. SAVE ALL PLOTS INTO ONE ZIP FILE
 # ============================================================
 
-pdf(
-  "All_RNAseq_Plots.pdf",
-  width = 10,
-  height = 8
-)
-
-for (plot_file in all_plots) {
+if (length(all_plots) > 0) {
   
-  # Read PNG image
-  img <- png::readPNG(plot_file)
-  
-  # Display image on PDF page
-  grid.newpage()
-  
-  grid.raster(
-    img,
-    width = unit(0.95, "npc"),
-    height = unit(0.90, "npc"),
-    interpolate = TRUE
+  zip(
+    "All_RNAseq_Plots.zip",
+    files = all_plots
   )
   
-  # Add filename as page title
-  grid.text(
-    basename(plot_file),
-    y = unit(0.97, "npc"),
-    gp = gpar(
-      fontsize = 12,
-      fontface = "bold"
-    )
-  )
 }
 
-dev.off()
+
+# ============================================================
+# 27. COMBINE ALL PLOTS INTO ONE PDF
+# ============================================================
+
+if (length(all_plots) > 0) {
+  
+  pdf(
+    "All_RNAseq_Plots.pdf",
+    width = 10,
+    height = 8
+  )
+  
+  for (plot_file in all_plots) {
+    
+    img <- png::readPNG(plot_file)
+    
+    grid.newpage()
+    
+    grid.text(
+      tools::file_path_sans_ext(
+        basename(plot_file)
+      ),
+      y = unit(0.97, "npc"),
+      gp = gpar(
+        fontsize = 12,
+        fontface = "bold"
+      )
+    )
+    
+    grid.raster(
+      img,
+      y = unit(0.46, "npc"),
+      width = unit(0.95, "npc"),
+      height = unit(0.85, "npc"),
+      interpolate = TRUE
+    )
+  }
+  
+  dev.off()
+  
+}
 
 
 # ============================================================
-# 30. CONFIRM OUTPUT
+# 28. CONFIRM OUTPUT
 # ============================================================
 
 cat(
-  "Number of plots saved:",
+  "\nNumber of plots saved:",
   length(all_plots),
   "\n"
 )
 
-cat("Created: All_RNAseq_Plots.zip\n")
-cat("Created: All_RNAseq_Plots.pdf\n")
+cat(
+  "Created: All_RNAseq_Plots.zip\n"
+)
+
+cat(
+  "Created: All_RNAseq_Plots.pdf\n"
+)
 
