@@ -1,0 +1,2 @@
+ID,Description,GeneRatio,BgRatio,RichFactor,FoldEnrichment,zScore,pvalue,p.adjust,qvalue,geneID,Count
+GO:0048167,regulation of synaptic plasticity,14/207,251/14458,0.055776892430278883,3.8957599553476916,5.577631546871202,1.557754451427231e-5,0.03833633704962416,0.03732051717314082,Grin2c/Hrh1/Npas4/Ptn/Shisa9/Syngap1/Prrt1/Cplx2/Grin2b/Kcnn2/Mapt/Abhd6/Nsmf/Arc,14

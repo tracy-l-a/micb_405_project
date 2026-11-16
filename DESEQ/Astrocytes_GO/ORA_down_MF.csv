@@ -1,0 +1,2 @@
+ID,Description,GeneRatio,BgRatio,RichFactor,FoldEnrichment,zScore,pvalue,p.adjust,qvalue,geneID,Count
+GO:0004468,"lysine N-acetyltransferase activity, acting on acetyl phosphate as donor",4/204,11/14313,0.36363636363636365,25.51336898395722,9.779532378505063,1.2226580757019995e-5,0.004927312045079058,0.004581750262630651,Nat8f5/Nat8f4/Nat8/Nat8f2,4
