@@ -2,7 +2,7 @@
 # GO enrichment analysis — microglia, LPS vs saline
 # MICB 405 Group 10 (Srinivasan et al. 2016, mouse, FACS-sorted microglia)
 #
-# Input : DESEQ/Microglia_DESeq2_results.csv from DESEQ/Deseq.R
+# Input : DESEQ/Microglia_Deseq/Microglia_DESeq2_results.csv from DESEQ/Deseq.R
 #         (results(..., lfcThreshold = 1, altHypothesis = "greaterAbs"))
 #         Also accepts an .rds of a DESeq2 results object.
 # Output: tables (CSV) + figures (PDF) in DESEQ/Microglia_GO/, next to this script
@@ -52,8 +52,20 @@ find_project_root <- function(start = getwd()) {
   }
 }
 PROJECT_DIR <- find_project_root()
-INPUT_FILE  <- file.path(PROJECT_DIR, "DESEQ", "Microglia_DESeq2_results.csv")
+INPUT_FILE  <- file.path(PROJECT_DIR, "DESEQ", "Microglia_Deseq", "Microglia_DESeq2_results.csv")
 OUT_DIR     <- file.path(PROJECT_DIR, "DESEQ", "Microglia_GO")
+
+# If the results file has been moved again, find it by name anywhere in the project
+if (!file.exists(INPUT_FILE)) {
+  hits <- list.files(PROJECT_DIR, pattern = "^Microglia_DESeq2_results\\.csv$",
+                     recursive = TRUE, full.names = TRUE)
+  if (length(hits) != 1) {
+    stop("Expected exactly one Microglia_DESeq2_results.csv in the project, found ",
+         length(hits), if (length(hits)) paste0(":\n  ", paste(hits, collapse = "\n  ")))
+  }
+  message("Input not at expected path; using: ", hits)
+  INPUT_FILE <- hits
+}
 GENE_COL   <- "gene_id"   # unversioned Ensembl IDs (ENSMUSG...) written by Deseq.R
 PADJ_CUT   <- 0.05     # DE gene cutoff for ORA
 LFC_CUT    <- 1        # |log2FC| cutoff for ORA; already enforced by padj here (see header)
@@ -126,10 +138,17 @@ fc_by_symbol <- fc_by_symbol[!is.na(names(fc_by_symbol)) & !duplicated(names(fc_
 # ---- Helpers ----------------------------------------------------------------
 n_terms <- function(x) if (is.null(x)) 0 else nrow(as.data.frame(x))
 
-save_plot <- function(p, file, n = 15, width = 8) {
-  ggsave(file.path(OUT_DIR, file), p, width = width,
-         height = max(4, 0.3 * n + 2), limitsize = FALSE)
+# height defaults to a size scaled to the number of terms shown (n),
+# but can be set directly: save_plot(p, "x.pdf", width = 9, height = 10)
+save_plot <- function(p, file, n = 15, width = 8, height = max(4, 0.3 * n + 2)) {
+  ggsave(file.path(OUT_DIR, file), p, width = width, height = height,
+         limitsize = FALSE)
 }
+
+# Shared styling for dot plots so long GO term names don't collide
+LABEL_WRAP <- 45   # wrap term names at ~45 characters (smaller = more lines)
+dot_theme <- theme(axis.text.y = element_text(size = 9, lineheight = 0.85))
+no_overlap_x <- scale_x_continuous(guide = guide_axis(check.overlap = TRUE))
 
 run_ora <- function(genes, ont) {
   if (length(genes) < 5) return(NULL)
@@ -172,8 +191,9 @@ for (ont in ONTOLOGIES) {
 
     title <- sprintf("Microglia: GO %s, %s in LPS", ont,
                      ifelse(direction == "up", "up-regulated", "down-regulated"))
-    save_plot(dotplot(ego, showCategory = 15) + ggtitle(title),
-              paste0(key, "_dotplot.pdf"))
+    save_plot(dotplot(ego, showCategory = 15, label_format = LABEL_WRAP) +
+                no_overlap_x + dot_theme + ggtitle(title),
+              paste0(key, "_dotplot.pdf"), n = 18, width = 9)
   }
 }
 
@@ -212,9 +232,9 @@ if (length(cc_input) > 0) {
   if (n_terms(ck) > 0) {
     ck <- clusterProfiler::simplify(ck, cutoff = 0.7, by = "p.adjust", select_fun = min)
     write_csv(as.data.frame(ck), file.path(OUT_DIR, "ORA_compare_up_down_BP.csv"))
-    save_plot(dotplot(ck, showCategory = 10) +
-                ggtitle("Microglia: GO BP, LPS vs saline"),
-              "ORA_compare_up_down_BP_dotplot.pdf", n = 20, width = 9)
+    save_plot(dotplot(ck, showCategory = 10, label_format = LABEL_WRAP) +
+                dot_theme + ggtitle("Microglia: GO BP, LPS vs saline"),
+              "ORA_compare_up_down_BP_dotplot.pdf", n = 22, width = 9)
   }
 }
 
@@ -262,10 +282,15 @@ for (ont in ONTOLOGIES) {
   write_csv(as.data.frame(gse), file.path(OUT_DIR, sprintf("GSEA_%s.csv", ont)))
 
   # Activated (NES > 0, higher in LPS) vs suppressed (NES < 0)
-  p <- dotplot(gse, showCategory = 10, split = ".sign") +
-    facet_grid(. ~ .sign) +
+  # Panels stacked vertically, each showing only its own terms, so the two
+  # panels don't share one crowded y-axis of 20 names.
+  p <- dotplot(gse, showCategory = 10, split = ".sign",
+               label_format = LABEL_WRAP) +
+    facet_grid(.sign ~ ., scales = "free_y", space = "free_y") +
+    no_overlap_x + dot_theme +
+    theme(strip.text.y = element_text(angle = -90, face = "bold")) +  # -90 = rotated 90° clockwise
     ggtitle(sprintf("Microglia: GSEA GO %s (LPS vs saline)", ont))
-  save_plot(p, sprintf("GSEA_%s_dotplot.pdf", ont), n = 20, width = 11)
+  save_plot(p, sprintf("GSEA_%s_dotplot.pdf", ont), n = 24, width = 9)
 }
 
 # Running-score plots for the top BP gene sets

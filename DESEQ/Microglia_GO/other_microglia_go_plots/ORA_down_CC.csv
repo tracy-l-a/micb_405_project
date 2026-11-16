@@ -1,0 +1,2 @@
+ID,Description,GeneRatio,BgRatio,RichFactor,FoldEnrichment,zScore,pvalue,p.adjust,qvalue,geneID,Count
+GO:0045121,membrane raft,21/448,273/13656,0.07692307692307693,2.34478021978022,4.133540775851507,2.673310099951751e-4,0.049722700460548566,0.04627774381252365,P2ry12/Rtn4rl1/Card11/Myo1d/Selplg/Ctsd/Entpd1/Abcg3/Irs1/Tgfbr1/Kdr/Adcy8/S1pr1/Efnb1/Adgrg1/Dlc1/Plpp3/Trem2/Arc/Atp1a2/Nos1ap,21
