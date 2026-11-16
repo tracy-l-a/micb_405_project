@@ -1,0 +1,2 @@
+ID,Description,GeneRatio,BgRatio,RichFactor,FoldEnrichment,zScore,pvalue,p.adjust,qvalue,geneID,Count
+GO:0031012,extracellular matrix,17/208,386/14570,0.04404145077720207,3.0850189318453567,4.996240916255276,3.986329541201426e-5,0.005641033847793794,0.005482833513222551,Lama3/Bcan/Sned1/Vegfa/Hapln1/Alpl/Adamts16/Olfml2a/Col11a2/Wnt7a/Mfge8/Ptn/Tspan9/Col1a1/Adamts18/Prelp/Adamtsl5,17
