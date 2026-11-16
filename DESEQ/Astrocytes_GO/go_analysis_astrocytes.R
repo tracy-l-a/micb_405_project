@@ -37,9 +37,35 @@ suppressPackageStartupMessages({
 })
 
 # ---- 1. Settings — edit these -----------------------------------------------
-# Paths are relative to the project root (where micb_405_project.Rproj lives).
-INPUT_FILE <- "DESEQ/Astrocytes_DESeq2_results.csv"
-OUT_DIR    <- "DESEQ/Astrocytes_GO"
+# This script lives in DESEQ/Astrocytes_GO/. Paths are built from the project
+# root (the folder with micb_405_project.Rproj + DESEQ/), which is found by
+# walking up from the working directory. So it runs whether R's working
+# directory is the project root, DESEQ/, or DESEQ/Astrocytes_GO/.
+find_project_root <- function(start = getwd()) {
+  d <- normalizePath(start)
+  repeat {
+    if (length(list.files(d, pattern = "\\.Rproj$")) > 0 &&
+        dir.exists(file.path(d, "DESEQ"))) return(d)
+    parent <- dirname(d)
+    if (parent == d) stop("Project root not found: setwd() into micb_405_project first.")
+    d <- parent
+  }
+}
+PROJECT_DIR <- find_project_root()
+INPUT_FILE  <- file.path(PROJECT_DIR, "DESEQ", "Astrocyte_Deseq", "Astrocytes_DESeq2_results.csv")
+OUT_DIR     <- file.path(PROJECT_DIR, "DESEQ", "Astrocytes_GO")
+
+# If the results file has been moved again, find it by name anywhere in the project
+if (!file.exists(INPUT_FILE)) {
+  hits <- list.files(PROJECT_DIR, pattern = "^Astrocytes_DESeq2_results\\.csv$",
+                     recursive = TRUE, full.names = TRUE)
+  if (length(hits) != 1) {
+    stop("Expected exactly one Astrocytes_DESeq2_results.csv in the project, found ",
+         length(hits), if (length(hits)) paste0(":\n  ", paste(hits, collapse = "\n  ")))
+  }
+  message("Input not at expected path; using: ", hits)
+  INPUT_FILE <- hits
+}
 GENE_COL   <- "gene_id"   # unversioned Ensembl IDs (ENSMUSG...) written by Deseq.R
 PADJ_CUT   <- 0.05     # DE gene cutoff for ORA
 LFC_CUT    <- 1        # |log2FC| cutoff for ORA; already enforced by padj here (see header)
@@ -112,10 +138,17 @@ fc_by_symbol <- fc_by_symbol[!is.na(names(fc_by_symbol)) & !duplicated(names(fc_
 # ---- Helpers ----------------------------------------------------------------
 n_terms <- function(x) if (is.null(x)) 0 else nrow(as.data.frame(x))
 
-save_plot <- function(p, file, n = 15, width = 8) {
-  ggsave(file.path(OUT_DIR, file), p, width = width,
-         height = max(4, 0.3 * n + 2), limitsize = FALSE)
+# height defaults to a size scaled to the number of terms shown (n),
+# but can be set directly: save_plot(p, "x.pdf", width = 9, height = 10)
+save_plot <- function(p, file, n = 15, width = 8, height = max(4, 0.3 * n + 2)) {
+  ggsave(file.path(OUT_DIR, file), p, width = width, height = height,
+         limitsize = FALSE)
 }
+
+# Styling for the GSEA dot plots so long GO term names don't collide
+LABEL_WRAP <- 45   # wrap term names at ~45 characters (smaller = more lines)
+dot_theme <- theme(axis.text.y = element_text(size = 9, lineheight = 0.85))
+no_overlap_x <- scale_x_continuous(guide = guide_axis(check.overlap = TRUE))
 
 run_ora <- function(genes, ont) {
   if (length(genes) < 5) return(NULL)
@@ -248,10 +281,15 @@ for (ont in ONTOLOGIES) {
   write_csv(as.data.frame(gse), file.path(OUT_DIR, sprintf("GSEA_%s.csv", ont)))
 
   # Activated (NES > 0, higher in LPS) vs suppressed (NES < 0)
-  p <- dotplot(gse, showCategory = 10, split = ".sign") +
-    facet_grid(. ~ .sign) +
+  # Panels stacked vertically, each showing only its own terms, so the two
+  # panels don't share one crowded y-axis of 20 names.
+  p <- dotplot(gse, showCategory = 10, split = ".sign",
+               label_format = LABEL_WRAP) +
+    facet_grid(.sign ~ ., scales = "free_y", space = "free_y") +
+    no_overlap_x + dot_theme +
+    theme(strip.text.y = element_text(angle = -90, face = "bold")) +  # -90 = rotated 90° clockwise
     ggtitle(sprintf("Astrocytes: GSEA GO %s (LPS vs saline)", ont))
-  save_plot(p, sprintf("GSEA_%s_dotplot.pdf", ont), n = 20, width = 11)
+  save_plot(p, sprintf("GSEA_%s_dotplot.pdf", ont), n = 24, width = 9)
 }
 
 # Running-score plots for the top BP gene sets
